@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  app_blue:
+    image: ${BLUE_IMAGE}
+    container_name: app_blue
+    environment:
+      - APP_POOL=blue
+      - RELEASE_ID=${RELEASE_ID_BLUE}
+      - PORT=${PORT:-3000}
+    ports:
+      - "8081:3000"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  app_green:
+    image: ${GREEN_IMAGE}
+    container_name: app_green
+    environment:
+      - APP_POOL=green
+      - RELEASE_ID=${RELEASE_ID_GREEN}
+      - PORT=${PORT:-3000}
+    ports:
+      - "8082:3000"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  nginx:
+    image: nginx:alpine
+    container_name: nginx_proxy
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./nginx.conf.template:/etc/nginx/nginx.conf.template:ro
+      - ./entrypoint.sh:/entrypoint.sh:ro
+    environment:
+      - ACTIVE_POOL=${ACTIVE_POOL}
+    command: /bin/sh /entrypoint.sh
+    depends_on:
+      - app_blue
+      - app_green

@@ -1,0 +1,9 @@
+cat > .gitignore << 'EOF'
+# Environment file with secrets
+.env
+
+# Docker
+*.log
+
+# IDE
+.vscode/
