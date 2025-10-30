@@ -1,198 +1,112 @@
-# Blue/Green Deployment with Nginx Auto-Failover
 
-This project implements a Blue/Green deployment strategy using Nginx as a reverse proxy with automatic failover capabilities.
+## Stage 3: Observability & Alerts
 
-## Architecture
+### Overview
 
-- **Blue Service**: Primary application instance (Port 8081)
-- **Green Service**: Backup application instance (Port 8082)
-- **Nginx**: Reverse proxy with health-based routing (Port 8080)
+Stage 3 adds operational visibility and Slack alerting to the Blue/Green deployment:
 
-## Features
+- **Enhanced Logging**: Nginx logs capture pool, release, status, and latency
+- **Real-time Monitoring**: Python watcher tails logs and detects issues
+- **Slack Alerts**: Automatic notifications for failovers and high error rates
+- **Runbook**: Operator guide for responding to alerts
 
-- Zero-downtime deployments
-- Automatic failover on service failure
-- Health-based traffic routing
-- Manual toggle between Blue/Green
-- Header forwarding (X-App-Pool, X-Release-Id)
-- Configurable via environment variables
+### Prerequisites
 
-## Prerequisites
+1. Complete Stage 2 setup
+2. Create a Slack webhook (see below)
 
-- Docker Engine 20.10+
-- Docker Compose V2+
-- Linux/Unix environment
+### Slack Webhook Setup
 
-## Quick Start
-
-### 1. Clone the Repository
-```bash
-git clone <your-repo-url>
-cd blue_green_deployment
+1. Go to https://api.slack.com/messaging/webhooks
+2. Create a new app in your workspace
+3. Enable "Incoming Webhooks"
+4. Add webhook to a channel (e.g., #alerts)
+5. Copy the webhook URL
+6. Add to `.env`:
+```
+   SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
 ```
 
-### 2. Configure Environment Variables
+### Quick Start
 ```bash
+# Configure environment
 cp .env.example .env
-```
+nano .env  # Add your Slack webhook URL
 
-Edit `.env` if needed to customize:
-- Image references
-- Active pool (blue/green)
-- Release identifiers
-
-### 3. Start Services
-```bash
+# Start all services
 docker compose up -d
+
+# Verify watcher is running
+docker compose logs -f alert_watcher
 ```
 
-### 4. Verify Deployment
+### Testing Alerts
+
+#### Test 1: Failover Alert
 ```bash
-# Check all containers are running
-docker compose ps
-
-# Test the main endpoint (through Nginx)
-curl -i http://localhost:8080/version
-
-# Test Blue directly
-curl -i http://localhost:8081/version
-
-# Test Green directly
-curl -i http://localhost:8082/version
-```
-
-## Testing Failover
-
-### Automatic Failover Test
-
-1. **Trigger failure on Blue**:
-```bash
+# 1. Trigger chaos on Blue
 curl -X POST "http://localhost:8081/chaos/start?mode=error"
-```
 
-2. **Verify automatic switch to Green**:
-```bash
-curl -i http://localhost:8080/version
-```
-
-Expected: Response shows `X-App-Pool: green`
-
-3. **Test stability (zero failed requests)**:
-```bash
-for i in {1..20}; do
-  curl -s -o /dev/null -w "Request $i: %{http_code}\n" http://localhost:8080/version
+# 2. Generate traffic to trigger failover
+for i in {1..10}; do
+  curl http://localhost:8080/version
   sleep 0.5
 done
+
+# 3. Check Slack for failover alert
+# 4. Verify in logs
+docker compose logs alert_watcher
 ```
 
-Expected: All requests return `200`
+**Expected:** Slack message showing failover from Blue to Green
 
-4. **Stop chaos**:
+#### Test 2: High Error Rate Alert
 ```bash
+# 1. Ensure Blue is active and trigger chaos
+curl -X POST "http://localhost:8081/chaos/start?mode=error"
+
+# 2. Generate enough traffic to exceed 2% error threshold
+# Need ~5+ errors in 200 requests
+for i in {1..250}; do
+  curl -s http://localhost:8080/version > /dev/null
+  sleep 0.1
+done
+
+# 3. Check Slack for error rate alert
+# 4. Verify in logs
+docker compose logs alert_watcher | grep "ERROR"
+
+# 5. Stop chaos
 curl -X POST "http://localhost:8081/chaos/stop"
 ```
 
-### Manual Toggle Test
+**Expected:** Slack message showing error rate exceeded threshold
 
-1. **Edit `.env` to switch active pool**:
+### Viewing Logs
+
+#### Nginx Access Logs (Structured)
 ```bash
-nano .env
+# View recent logs
+docker compose exec nginx tail -50 /var/log/nginx/access.log
 
-## Endpoints
+# Filter by pool
+docker compose exec nginx grep "pool=blue" /var/log/nginx/access.log | tail -10
 
-### Main Service (Nginx Proxy)
-- `http://localhost:8080/version` - Get application version
-- `http://localhost:8080/healthz` - Health check
+# Check for errors
+docker compose exec nginx grep "upstream_status=5" /var/log/nginx/access.log
+```
 
-### Direct Access
-- `http://localhost:8081/*` - Blue instance
-- `http://localhost:8082/*` - Green instance
+**Sample log line:**
+```
+172.18.0.1 - - [25/Oct/2025:15:30:45 +0000] "GET /version HTTP/1.1" 200 57 
+"-" "curl/7.81.0" pool=blue release=blue-v1.0.0 upstream_status=200 
+upstream_addr=172.18.0.2:3000 request_time=0.045 upstream_response_time=0.042
+```
 
-### Chaos Engineering
-- `POST http://localhost:8081/chaos/start?mode=error` - Trigger errors on Blue
-- `POST http://localhost:8081/chaos/stop` - Stop chaos on Blue
-- `POST http://localhost:8082/chaos/start?mode=error` - Trigger errors on Green
-- `POST http://localhost:8082/chaos/stop` - Stop chaos on Green
-
-## Configuration
-
-### Nginx Failover Settings
-
-- **Max Fails**: 1 (marks server down after 1 failure)
-- **Fail Timeout**: 10s (server marked down for 10 seconds)
-- **Connection Timeout**: 2s
-- **Read Timeout**: 2s
-- **Retry Conditions**: error, timeout, http_500, http_502, http_503, http_504
-
-## Troubleshooting
-
-### Containers not starting
+#### Watcher Logs
 ```bash
-docker compose logs
-docker compose down
-docker compose up -d
-```
+# Follow watcher output
+docker compose logs -f alert_watcher
 
-### Port conflicts
-```bash
-# Check what's using ports
-sudo lsof -i :8080
-sudo lsof -i :8081
-sudo lsof -i :8082
-
-# Or change ports in docker-compose.yml
-```
-
-### Nginx not routing correctly
-```bash
-# Check generated Nginx config
-docker compose exec nginx cat /etc/nginx/nginx.conf
-
-# Check Nginx logs
-docker compose logs nginx
-```
-
-### Application not responding
-```bash
-# Check app logs
-docker compose logs app_blue
-docker compose logs app_green
-
-# Restart specific service
-docker compose restart app_blue
-```
-
-## Stopping Services
-```bash
-# Stop all services
-docker compose down
-
-# Stop and remove volumes
-docker compose down -v
-```
-
-## Project Structure
-```
-.
-├── docker-compose.yml          # Docker Compose configuration
-├── .env                        # Environment variables (not in repo)
-├── .env.example               # Example environment variables
-├── nginx.conf.template        # Nginx configuration template
-├── entrypoint.sh             # Nginx entrypoint script
-├── failed_over.sh            # This file performs mutliple 
-├── .gitignore                # This file ignores large files and sensitive files
-├── README.md                 # Verifies if any failure occurs over 10 consecutive runs of the system
-└── DECISION.md              # Implementation decisions
-```
-
-## Requirements Met
-
-- Docker Compose orchestration
-- Nginx reverse proxy with upstream configuration
-- Primary/backup failover mechanism
-- Automatic retry on failure
-- Zero failed requests during failover
-- Header forwarding (X-App-Pool, X-Release-Id)
-- Environment-based configuration
-- Direct access to Blue/Green for chaos testing
-- Health-based routing with tight timeouts
+# Check for alerts
+docker compose logs alert
